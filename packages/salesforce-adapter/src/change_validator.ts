@@ -81,6 +81,7 @@ const createSalesforceChangeValidator = ({ config, isSandbox, checkOnly, client 
   client: SalesforceClient
 }): ChangeValidator => {
   const isCheckOnly = checkOnly || (config.client?.deploy?.checkOnly ?? false)
+  
   const activeValidators = Object.entries(changeValidators).filter(
     ([name, definition]) => config.validators?.[name as ChangeValidatorName]
           ?? (isCheckOnly ? definition.defaultInValidate : definition.defaultInDeploy)
