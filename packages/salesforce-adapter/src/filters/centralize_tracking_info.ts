@@ -17,8 +17,10 @@ import _ from 'lodash'
 import { collections } from '@salto-io/lowerdash'
 import {
   Change,
-  Field, getAllChangeData,
-  getChangeData, isAdditionChange,
+  Field,
+  getAllChangeData,
+  getChangeData,
+  isAdditionChange,
   isAdditionOrModificationChange,
   isField,
   isFieldChange,
@@ -31,13 +33,16 @@ import {
   toChange,
 } from '@salto-io/adapter-api'
 import { LocalFilterCreator } from '../filter'
-import { isCustomObject, isFieldOfCustomObject } from '../transformers/transformer'
 import {
+  isCustomObject,
+  isFieldOfCustomObject,
+} from '../transformers/transformer'
+import {
+  FEED_HISTORY_TRACKED_FIELDS,
   FIELD_ANNOTATIONS,
   HISTORY_TRACKED_FIELDS,
-  FEED_HISTORY_TRACKED_FIELDS,
-  OBJECT_HISTORY_TRACKING_ENABLED,
   OBJECT_FEED_HISTORY_TRACKING_ENABLED,
+  OBJECT_HISTORY_TRACKING_ENABLED,
 } from '../constants'
 
 const { awu } = collections.asynciterable
@@ -159,16 +164,19 @@ const filter: LocalFilterCreator = () => {
           })
       }
 
-      const distributeTrackingInfoInAddedObjectTypes = async (trackingDef: TrackedFieldsDefinition): Promise<void> => {
+      fieldsWithSyntheticChanges = new Set()
+      const additionalChanges: Change[] = []
+
+      const distributeTrackingInfoInChanges = async (trackingDef: TrackedFieldsDefinition) : Promise<void> => {
+        // Added object types - set the annotations on the type and its fields
         await awu(changes)
           .filter(isAdditionChange)
           .filter(isObjectTypeChange)
           .filter(change => isCustomObject(getChangeData(change)))
           .map(getChangeData)
           .forEach(objType => distributeTrackingInfo(objType, trackingDef))
-      }
 
-      const updateAnnotationsOnChangedFields = async (trackingDef: TrackedFieldsDefinition): Promise<string[]> => {
+        // Added or modified fields - set the annotations on the fields
         const fieldsThatChanged = await awu(changes)
           .filter(isAdditionOrModificationChange)
           .map(getChangeData)
@@ -180,13 +188,9 @@ const filter: LocalFilterCreator = () => {
           field.annotations[trackingDef.fieldLevelEnable] = isHistoryTrackedField(field, trackingDef)
         })
 
-        return fieldsThatChanged.map(field => field.elemID.getFullName())
-      }
+        const namesOfFieldsThatChanged = new Set(fieldsThatChanged.map(field => field.elemID.getFullName()))
 
-      const distributeTrackingInfoInModifiedObjectTypes = async (
-        trackingDef: TrackedFieldsDefinition,
-        namesOfFieldsThatChanged: Set<string>,
-      ): Promise<Change[]> => {
+        // Existing object types that changed
         const modifiedObjectTypes = await awu(changes)
           .filter(isObjectTypeChange)
           .filter(isModificationChange)
@@ -201,45 +205,33 @@ const filter: LocalFilterCreator = () => {
         //  - if the list of tracked fields changed, create field changes that represent the changes to the trackHistory
         //    annotations. We only create such changes if we don't already have an unrelated change for this field (in
         //    which case we handled it above)
-        const additionalChanges = modifiedObjectTypes.flatMap(change => (
+        const additionalFieldChanges = modifiedObjectTypes.flatMap(change => (
           Object.values(getChangeData(change).fields)
             .filter(field => !namesOfFieldsThatChanged.has(field.elemID.getFullName()))
             .filter(field => fieldHistoryTrackingChanged(field, change, trackingDef))
             .map(field => createHistoryTrackingFieldChange(field, change, trackingDef))
         ))
 
-        additionalChanges
+        additionalFieldChanges
           .map(getChangeData)
           .map(field => field.elemID.getFullName())
           .forEach(name => fieldsWithSyntheticChanges.add(name))
 
-        return additionalChanges
+        additionalFieldChanges.forEach(change => additionalChanges.push(change))
+
+        // Finally, remove the aggregate annotation from all object types (either added or changed)
+        changes
+          .filter(isAdditionOrModificationChange)
+          .filter(isObjectTypeChange)
+          .map(getChangeData)
+          .filter(isCustomObject)
+          .forEach(objType => {
+            delete objType.annotations[trackingDef.aggregate]
+          })
       }
 
-      fieldsWithSyntheticChanges = new Set()
-      const additionalChanges: Change[] = []
       await awu(trackedFieldsDefinitions)
-        .forEach(async trackingDef => {
-          // Added object types - set the annotations on the type and its fields
-          await distributeTrackingInfoInAddedObjectTypes(trackingDef)
-
-          // Added or modified fields - set the annotations on the fields
-          const namesOfFieldsThatChanged = new Set(await updateAnnotationsOnChangedFields(trackingDef))
-
-          // Existing object types that changed
-          const fieldChanges = await distributeTrackingInfoInModifiedObjectTypes(trackingDef, namesOfFieldsThatChanged)
-          fieldChanges.forEach(change => additionalChanges.push(change))
-
-          // Finally, remove the aggregate annotation from all object types (either added or changed)
-          changes
-            .filter(isAdditionOrModificationChange)
-            .filter(isObjectTypeChange)
-            .map(getChangeData)
-            .filter(isCustomObject)
-            .forEach(objType => {
-              delete objType.annotations[trackingDef.aggregate]
-            })
-        })
+        .forEach(distributeTrackingInfoInChanges)
 
       additionalChanges.forEach(change => changes.push(change))
     },
