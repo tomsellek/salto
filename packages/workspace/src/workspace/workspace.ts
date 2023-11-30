@@ -759,6 +759,7 @@ export const loadWorkspace = async (
         stateToBuild.states[envName].merged,
         changeResult.cacheValid,
         element => getCustomReferences(element, currentEnvConf().accountToServiceName ?? {}),
+        adaptersConfig,
       )
 
       const changedElements = changes

@@ -31,14 +31,20 @@ import {
 import { walkOnElement, WALK_NEXT_STEP } from '@salto-io/adapter-utils'
 import { logger } from '@salto-io/logging'
 import _ from 'lodash'
-import { collections } from '@salto-io/lowerdash'
+import { collections, values } from '@salto-io/lowerdash'
 import { ElementsSource } from './elements_source'
 import { getAllElementsChanges } from './index_utils'
 import { RemoteMap, RemoteMapEntry } from './remote_map'
+import { AdaptersConfigSource } from './adapters_config_source'
 
 const log = logger(module)
+
+const { isDefined } = values
+
 export const REFERENCE_INDEXES_VERSION = 4
 export const REFERENCE_INDEXES_KEY = 'reference_indexes'
+
+const CUSTOM_REFERENCES_CONFIG = 'customReferences'
 
 type ChangeReferences = {
   removed: ReferenceInfo[]
@@ -273,6 +279,13 @@ const getIdToCustomReferences = async (getCustomReferences: GetCustomReferencesF
   }
 }
 
+const areCustomReferencesEnabled = async (
+  adaptersConfig: AdaptersConfigSource,
+  accountName: string,
+): Promise<boolean> => (
+  (await adaptersConfig.getAdapter(accountName))?.value[CUSTOM_REFERENCES_CONFIG] ?? true
+)
+
 export const updateReferenceIndexes = async (
   changes: Change<Element>[],
   referenceTargetsIndex: RemoteMap<ReferenceTargetIndexValue>,
@@ -281,6 +294,7 @@ export const updateReferenceIndexes = async (
   elementsSource: ElementsSource,
   isCacheValid: boolean,
   getCustomReferences: GetCustomReferencesFunc,
+  adaptersConfig: AdaptersConfigSource,
 ): Promise<void> => log.time(async () => {
   let relevantChanges = changes
   let initialIndex = false
@@ -302,7 +316,14 @@ export const updateReferenceIndexes = async (
     initialIndex = true
   }
 
-  const customReferences = await getIdToCustomReferences(getCustomReferences, changes)
+  const changesForCustomRefs = _(changes)
+    .groupBy(change => getChangeData(change).elemID.adapter)
+    .pickBy((_changes, accountName) => areCustomReferencesEnabled(adaptersConfig, accountName))
+    .values()
+    .filter(isDefined)
+    .flatten()
+    .value()
+  const customReferences = await getIdToCustomReferences(getCustomReferences, changesForCustomRefs)
 
   const changeToReferences = Object.fromEntries(relevantChanges
     .map(change => [
